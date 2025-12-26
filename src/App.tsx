@@ -17,6 +17,8 @@ import {
   X,
   Plus,
   Clock,
+  Headphones,
+  Square,
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
@@ -103,6 +105,13 @@ function App() {
   const [scheduleDuration, setScheduleDuration] = useState(30);
   const [scheduleTitle, setScheduleTitle] = useState("");
   const [scheduleServiceType, setScheduleServiceType] = useState<ServiceType>("nhk");
+
+  // Live streaming state
+  const [isLiveStreaming, setIsLiveStreaming] = useState(false);
+  const [liveStreamStation, setLiveStreamStation] = useState<Station | null>(null);
+  const [liveStreamAudio, setLiveStreamAudio] = useState<HTMLAudioElement | null>(null);
+  const [liveStreamServiceType, setLiveStreamServiceType] = useState<ServiceType>("nhk");
+  const [liveVolume, setLiveVolume] = useState(80);
 
   useEffect(() => {
     loadLibrary();
@@ -373,6 +382,76 @@ function App() {
     }
   };
 
+  const startLiveStream = async (station: Station, type: ServiceType) => {
+    // Stop any existing live stream
+    if (liveStreamAudio) {
+      liveStreamAudio.pause();
+      liveStreamAudio.src = "";
+    }
+
+    // Also pause any playing recordings
+    if (audioElement && isPlaying) {
+      audioElement.pause();
+      setIsPlaying(false);
+    }
+
+    try {
+      let streamUrl: string;
+      if (type === "nhk") {
+        streamUrl = await safeInvoke<string>("get_nhk_stream_url", { stationId: station.id });
+      } else {
+        streamUrl = await safeInvoke<string>("get_radiko_stream_url", { stationId: station.id });
+      }
+
+      if (!streamUrl) {
+        setError("ストリームURLを取得できませんでした");
+        return;
+      }
+
+      const audio = new Audio(streamUrl);
+      audio.volume = liveVolume / 100;
+
+      audio.addEventListener("error", () => {
+        setError("ライブストリームの再生に失敗しました。HLS形式には対応していない可能性があります。");
+        setIsLiveStreaming(false);
+        setLiveStreamStation(null);
+      });
+
+      audio.play().catch((e) => {
+        // For HLS streams, we might need a different approach
+        // Try using a basic fallback message
+        console.error("Failed to play stream:", e);
+        setError("ライブストリームの再生に失敗しました。ブラウザがHLS形式に対応していない可能性があります。");
+        setIsLiveStreaming(false);
+        setLiveStreamStation(null);
+      });
+
+      setLiveStreamAudio(audio);
+      setLiveStreamStation(station);
+      setLiveStreamServiceType(type);
+      setIsLiveStreaming(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const stopLiveStream = () => {
+    if (liveStreamAudio) {
+      liveStreamAudio.pause();
+      liveStreamAudio.src = "";
+    }
+    setLiveStreamAudio(null);
+    setLiveStreamStation(null);
+    setIsLiveStreaming(false);
+  };
+
+  const updateLiveVolume = (volume: number) => {
+    setLiveVolume(volume);
+    if (liveStreamAudio) {
+      liveStreamAudio.volume = volume / 100;
+    }
+  };
+
   const formatTime = (timeStr: string) => {
     if (timeStr.length === 14) {
       return `${timeStr.slice(8, 10)}:${timeStr.slice(10, 12)}`;
@@ -446,7 +525,56 @@ function App() {
           </div>
         </nav>
 
-        {currentRecording && (
+        {/* Live Streaming Player */}
+        {isLiveStreaming && liveStreamStation && (
+          <div className="p-4 border-t border-border bg-red-500/10">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-red-500/20 flex items-center justify-center flex-shrink-0 relative">
+                  <Headphones className="w-4 h-4 text-red-500" />
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="destructive" className="text-xs px-1.5 py-0">
+                      LIVE
+                    </Badge>
+                  </div>
+                  <p className="text-sm font-medium truncate">{liveStreamStation.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {liveStreamServiceType === "nhk" ? "NHK" : "radiko"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="h-4 w-4 text-muted-foreground" />
+                  <Slider
+                    value={liveVolume}
+                    onChange={(value) => updateLiveVolume(value)}
+                    className="flex-1 cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-center">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={stopLiveStream}
+                  className="w-full"
+                >
+                  <Square className="h-3 w-3 mr-2" />
+                  停止
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Recording Player */}
+        {currentRecording && !isLiveStreaming && (
           <div className="p-4 border-t border-border bg-card/50">
             <div className="space-y-3">
               <div className="flex items-center gap-3">
@@ -616,15 +744,35 @@ function App() {
                         <CardContent className="p-2">
                           <div className="space-y-1">
                             {nhkStations.map((station) => (
-                              <Button
-                                key={station.id}
-                                variant={selectedStation?.id === station.id ? "default" : "ghost"}
-                                className="w-full justify-start"
-                                onClick={() => handleStationSelect(station)}
-                              >
-                                <Radio className="h-4 w-4 mr-2" />
-                                {station.name}
-                              </Button>
+                              <div key={station.id} className="flex items-center gap-1">
+                                <Button
+                                  variant={selectedStation?.id === station.id ? "default" : "ghost"}
+                                  className="flex-1 justify-start"
+                                  onClick={() => handleStationSelect(station)}
+                                >
+                                  <Radio className="h-4 w-4 mr-2" />
+                                  {station.name}
+                                </Button>
+                                <Button
+                                  variant={isLiveStreaming && liveStreamStation?.id === station.id ? "destructive" : "outline"}
+                                  size="icon"
+                                  className="h-8 w-8 flex-shrink-0"
+                                  onClick={() => {
+                                    if (isLiveStreaming && liveStreamStation?.id === station.id) {
+                                      stopLiveStream();
+                                    } else {
+                                      startLiveStream(station, "nhk");
+                                    }
+                                  }}
+                                  title={isLiveStreaming && liveStreamStation?.id === station.id ? "停止" : "ライブを聴く"}
+                                >
+                                  {isLiveStreaming && liveStreamStation?.id === station.id ? (
+                                    <Square className="h-3 w-3" />
+                                  ) : (
+                                    <Headphones className="h-3 w-3" />
+                                  )}
+                                </Button>
+                              </div>
                             ))}
                           </div>
                         </CardContent>
@@ -747,15 +895,35 @@ function App() {
                             <ScrollArea className="max-h-[400px]">
                               <div className="space-y-1">
                                 {stations.map((station) => (
-                                  <Button
-                                    key={station.id}
-                                    variant={selectedStation?.id === station.id ? "default" : "ghost"}
-                                    className="w-full justify-start"
-                                    onClick={() => handleStationSelect(station)}
-                                  >
-                                    <Radio className="h-4 w-4 mr-2" />
-                                    {station.name}
-                                  </Button>
+                                  <div key={station.id} className="flex items-center gap-1">
+                                    <Button
+                                      variant={selectedStation?.id === station.id ? "default" : "ghost"}
+                                      className="flex-1 justify-start"
+                                      onClick={() => handleStationSelect(station)}
+                                    >
+                                      <Radio className="h-4 w-4 mr-2" />
+                                      {station.name}
+                                    </Button>
+                                    <Button
+                                      variant={isLiveStreaming && liveStreamStation?.id === station.id ? "destructive" : "outline"}
+                                      size="icon"
+                                      className="h-8 w-8 flex-shrink-0"
+                                      onClick={() => {
+                                        if (isLiveStreaming && liveStreamStation?.id === station.id) {
+                                          stopLiveStream();
+                                        } else {
+                                          startLiveStream(station, "radiko");
+                                        }
+                                      }}
+                                      title={isLiveStreaming && liveStreamStation?.id === station.id ? "停止" : "ライブを聴く"}
+                                    >
+                                      {isLiveStreaming && liveStreamStation?.id === station.id ? (
+                                        <Square className="h-3 w-3" />
+                                      ) : (
+                                        <Headphones className="h-3 w-3" />
+                                      )}
+                                    </Button>
+                                  </div>
                                 ))}
                               </div>
                             </ScrollArea>

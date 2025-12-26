@@ -161,6 +161,21 @@ async fn start_nhk_recording(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_radiko_stream_url(
+    station_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let token = {
+        let auth = state.auth_token.lock().unwrap();
+        match &*auth {
+            Some(t) => t.clone(),
+            None => return Err("認証が必要です".to_string()),
+        }
+    };
+    Ok(radiko::get_stream_url(&token, &station_id))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -181,6 +196,7 @@ pub fn run() {
             get_nhk_programs,
             get_nhk_stream_url,
             start_nhk_recording,
+            get_radiko_stream_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
