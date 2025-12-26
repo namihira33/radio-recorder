@@ -15,6 +15,8 @@ import {
   Loader2,
   AlertCircle,
   X,
+  Plus,
+  Clock,
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { Button } from "./components/ui/button";
@@ -52,8 +54,31 @@ interface Recording {
   tags: string[];
 }
 
+interface ScheduledRecording {
+  id: string;
+  stationId: string;
+  stationName: string;
+  title: string;
+  startTime: Date;
+  duration: number;
+  serviceType: "nhk" | "radiko";
+}
+
 type View = "library" | "stations" | "schedule" | "settings";
 type ServiceType = "nhk" | "radiko";
+
+// Check if running in Tauri context
+const isTauri = (): boolean => {
+  return typeof window !== "undefined" && "__TAURI__" in window;
+};
+
+// Safe invoke wrapper
+async function safeInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauri()) {
+    throw new Error("このアプリはTauriデスクトップアプリとして実行する必要があります。\n\n起動方法: npm run tauri dev");
+  }
+  return invoke<T>(command, args);
+}
 
 function App() {
   const [view, setView] = useState<View>("library");
@@ -76,10 +101,31 @@ function App() {
   const [isProgramLoading, setIsProgramLoading] = useState(false);
   const [error, setError] = useState("");
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const [isTauriAvailable, setIsTauriAvailable] = useState(true);
+
+  // Scheduled recordings state
+  const [scheduledRecordings, setScheduledRecordings] = useState<ScheduledRecording[]>([]);
+  const [showScheduleForm, setShowScheduleForm] = useState(false);
+  const [scheduleStation, setScheduleStation] = useState<string>("");
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
+  const [scheduleDuration, setScheduleDuration] = useState(30);
+  const [scheduleTitle, setScheduleTitle] = useState("");
+  const [scheduleServiceType, setScheduleServiceType] = useState<ServiceType>("nhk");
 
   useEffect(() => {
-    loadLibrary();
-    loadNhkStations();
+    const tauriAvailable = isTauri();
+    setIsTauriAvailable(tauriAvailable);
+
+    if (tauriAvailable) {
+      loadLibrary();
+      loadNhkStations();
+      loadScheduledRecordings();
+    }
+
+    // Set up scheduled recording checker
+    const interval = setInterval(checkScheduledRecordings, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -90,7 +136,7 @@ function App() {
 
   const loadLibrary = async () => {
     try {
-      const library = await invoke<Recording[]>("get_library");
+      const library = await safeInvoke<Recording[]>("get_library");
       setRecordings(library);
     } catch (e) {
       console.error("Failed to load library:", e);
@@ -99,10 +145,57 @@ function App() {
 
   const loadNhkStations = async () => {
     try {
-      const stations = await invoke<Station[]>("get_nhk_stations");
-      setNhkStations(stations);
+      const stationList = await safeInvoke<Station[]>("get_nhk_stations");
+      setNhkStations(stationList);
     } catch (e) {
       console.error("Failed to load NHK stations:", e);
+    }
+  };
+
+  const loadScheduledRecordings = () => {
+    const saved = localStorage.getItem("scheduledRecordings");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setScheduledRecordings(parsed.map((r: ScheduledRecording) => ({
+          ...r,
+          startTime: new Date(r.startTime),
+        })));
+      } catch {
+        console.error("Failed to parse scheduled recordings");
+      }
+    }
+  };
+
+  const saveScheduledRecordings = (recordings: ScheduledRecording[]) => {
+    localStorage.setItem("scheduledRecordings", JSON.stringify(recordings));
+    setScheduledRecordings(recordings);
+  };
+
+  const checkScheduledRecordings = async () => {
+    if (!isTauri()) return;
+
+    const now = new Date();
+    const toRecord = scheduledRecordings.filter((r) => {
+      const diff = r.startTime.getTime() - now.getTime();
+      return diff > -60000 && diff < 60000;
+    });
+
+    for (const recording of toRecord) {
+      try {
+        const station = recording.serviceType === "nhk"
+          ? nhkStations.find(s => s.id === recording.stationId)
+          : stations.find(s => s.id === recording.stationId);
+
+        if (station) {
+          await startRecordingInternal(station, recording.duration, recording.title, recording.serviceType);
+        }
+
+        const updated = scheduledRecordings.filter(r => r.id !== recording.id);
+        saveScheduledRecordings(updated);
+      } catch (e) {
+        console.error("Failed to start scheduled recording:", e);
+      }
     }
   };
 
@@ -110,9 +203,9 @@ function App() {
     setIsLoading(true);
     setError("");
     try {
-      await invoke("authenticate", { email, password });
+      await safeInvoke("authenticate", { email, password });
       setIsAuthenticated(true);
-      const stationList = await invoke<Station[]>("get_stations");
+      const stationList = await safeInvoke<Station[]>("get_stations");
       setStations(stationList);
     } catch (e) {
       setError(String(e));
@@ -130,13 +223,13 @@ function App() {
 
     try {
       if (serviceType === "nhk") {
-        const programList = await invoke<Program[]>("get_nhk_programs", {
+        const programList = await safeInvoke<Program[]>("get_nhk_programs", {
           stationId: station.id,
           date: today,
         });
         setPrograms(programList);
       } else {
-        const programList = await invoke<Program[]>("get_programs", {
+        const programList = await safeInvoke<Program[]>("get_programs", {
           stationId: station.id,
           date: today,
         });
@@ -150,28 +243,81 @@ function App() {
     }
   };
 
-  const startRecording = async (station: Station, durationMinutes: number, title: string) => {
-    try {
-      const timestamp = new Date().toISOString().split("T")[0];
-      const safeName = title.replace(/[/\\?%*:|"<>]/g, "_");
+  const startRecordingInternal = async (
+    station: Station,
+    durationMinutes: number,
+    title: string,
+    type: ServiceType
+  ) => {
+    const timestamp = new Date().toISOString().split("T")[0];
+    const safeName = title.replace(/[/\\?%*:|"<>]/g, "_");
 
-      if (serviceType === "nhk") {
-        await invoke("start_nhk_recording", {
-          stationId: station.id,
-          durationMinutes: durationMinutes,
-          outputName: `${timestamp}_${safeName}`,
-        });
-      } else {
-        await invoke("start_recording", {
-          stationId: station.id,
-          durationMinutes: durationMinutes,
-          outputName: `${timestamp}_${safeName}`,
-        });
-      }
+    if (type === "nhk") {
+      await safeInvoke("start_nhk_recording", {
+        stationId: station.id,
+        durationMinutes: durationMinutes,
+        outputName: `${timestamp}_${safeName}`,
+      });
+    } else {
+      await safeInvoke("start_recording", {
+        stationId: station.id,
+        durationMinutes: durationMinutes,
+        outputName: `${timestamp}_${safeName}`,
+      });
+    }
+  };
+
+  const startRecording = async (
+    station: Station,
+    durationMinutes: number,
+    title: string
+  ) => {
+    try {
+      await startRecordingInternal(station, durationMinutes, title, serviceType);
       setTimeout(loadLibrary, 1000);
     } catch (e) {
       setError(String(e));
     }
+  };
+
+  const addScheduledRecording = () => {
+    if (!scheduleStation || !scheduleDate || !scheduleTime || !scheduleTitle) {
+      setError("すべての項目を入力してください");
+      return;
+    }
+
+    const startTime = new Date(`${scheduleDate}T${scheduleTime}`);
+    if (startTime <= new Date()) {
+      setError("開始時刻は現在より後に設定してください");
+      return;
+    }
+
+    const stationList = scheduleServiceType === "nhk" ? nhkStations : stations;
+    const station = stationList.find(s => s.id === scheduleStation);
+
+    const newRecording: ScheduledRecording = {
+      id: crypto.randomUUID(),
+      stationId: scheduleStation,
+      stationName: station?.name || scheduleStation,
+      title: scheduleTitle,
+      startTime,
+      duration: scheduleDuration,
+      serviceType: scheduleServiceType,
+    };
+
+    saveScheduledRecordings([...scheduledRecordings, newRecording]);
+    setShowScheduleForm(false);
+    setScheduleStation("");
+    setScheduleDate("");
+    setScheduleTime("");
+    setScheduleTitle("");
+    setScheduleDuration(30);
+    setError("");
+  };
+
+  const removeScheduledRecording = (id: string) => {
+    const updated = scheduledRecordings.filter(r => r.id !== id);
+    saveScheduledRecordings(updated);
   };
 
   const playRecording = useCallback((recording: Recording) => {
@@ -231,7 +377,7 @@ function App() {
 
   const deleteRecording = async (id: string) => {
     try {
-      await invoke("delete_recording", { id });
+      await safeInvoke("delete_recording", { id });
       loadLibrary();
       if (currentRecording?.id === id) {
         audioElement?.pause();
@@ -262,6 +408,16 @@ function App() {
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
+  const formatDateTime = (date: Date) => {
+    return date.toLocaleString("ja-JP", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
   const navItems = [
     { id: "library" as View, label: "ライブラリ", icon: Library },
     { id: "stations" as View, label: "放送局", icon: Radio },
@@ -269,11 +425,37 @@ function App() {
     { id: "settings" as View, label: "設定", icon: Settings },
   ];
 
+  // Show error if not in Tauri context
+  if (!isTauriAvailable) {
+    return (
+      <div className="flex h-screen bg-background items-center justify-center p-8">
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-destructive">
+              <AlertCircle className="h-5 w-5" />
+              起動エラー
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-muted-foreground">
+              このアプリはTauriデスクトップアプリとして実行する必要があります。
+            </p>
+            <div className="bg-secondary p-4 rounded-lg">
+              <p className="font-mono text-sm">npm run tauri dev</p>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              上記のコマンドで起動してください。
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-background">
       {/* Sidebar */}
       <aside className="w-64 border-r border-border flex flex-col">
-        {/* Logo */}
         <div className="p-6 border-b border-border">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
@@ -283,7 +465,6 @@ function App() {
           </div>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 p-4">
           <div className="space-y-1">
             {navItems.map((item) => (
@@ -298,12 +479,16 @@ function App() {
               >
                 <item.icon className="h-4 w-4" />
                 {item.label}
+                {item.id === "schedule" && scheduledRecordings.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto">
+                    {scheduledRecordings.length}
+                  </Badge>
+                )}
               </Button>
             ))}
           </div>
         </nav>
 
-        {/* Mini Player */}
         {currentRecording && (
           <div className="p-4 border-t border-border bg-card/50">
             <div className="space-y-3">
@@ -350,14 +535,13 @@ function App() {
         )}
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 overflow-hidden">
         <ScrollArea className="h-full">
           <div className="p-8">
             {error && (
               <div className="mb-6 p-4 rounded-lg bg-destructive/10 border border-destructive/20 flex items-center gap-3">
                 <AlertCircle className="h-5 w-5 text-destructive flex-shrink-0" />
-                <p className="text-sm text-destructive flex-1">{error}</p>
+                <p className="text-sm text-destructive flex-1 whitespace-pre-wrap">{error}</p>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -369,7 +553,6 @@ function App() {
               </div>
             )}
 
-            {/* Library View */}
             {view === "library" && (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
@@ -453,7 +636,6 @@ function App() {
               </div>
             )}
 
-            {/* Stations View */}
             {view === "stations" && (
               <div className="space-y-6">
                 <h1 className="text-2xl font-bold">放送局</h1>
@@ -567,22 +749,18 @@ function App() {
                           <CardTitle>radikoにログイン</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                          <div className="space-y-2">
-                            <Input
-                              type="email"
-                              placeholder="メールアドレス"
-                              value={email}
-                              onChange={(e) => setEmail(e.target.value)}
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Input
-                              type="password"
-                              placeholder="パスワード"
-                              value={password}
-                              onChange={(e) => setPassword(e.target.value)}
-                            />
-                          </div>
+                          <Input
+                            type="email"
+                            placeholder="メールアドレス"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                          />
+                          <Input
+                            type="password"
+                            placeholder="パスワード"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                          />
                           <Button
                             className="w-full"
                             onClick={handleLogin}
@@ -697,23 +875,147 @@ function App() {
               </div>
             )}
 
-            {/* Schedule View */}
             {view === "schedule" && (
               <div className="space-y-6">
-                <h1 className="text-2xl font-bold">予約録音</h1>
-                <Card>
-                  <CardContent className="flex flex-col items-center justify-center py-16">
-                    <Calendar className="h-12 w-12 text-muted-foreground/50 mb-4" />
-                    <p className="text-muted-foreground">この機能は準備中です</p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      今後のアップデートにご期待ください
-                    </p>
-                  </CardContent>
-                </Card>
+                <div className="flex items-center justify-between">
+                  <h1 className="text-2xl font-bold">予約録音</h1>
+                  <Button onClick={() => setShowScheduleForm(true)}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    新規予約
+                  </Button>
+                </div>
+
+                {showScheduleForm && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">新規予約</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">サービス</label>
+                          <Select
+                            value={scheduleServiceType}
+                            onValueChange={(v) => {
+                              setScheduleServiceType(v as ServiceType);
+                              setScheduleStation("");
+                            }}
+                          >
+                            <option value="nhk">NHK</option>
+                            <option value="radiko">radiko</option>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">放送局</label>
+                          <Select
+                            value={scheduleStation}
+                            onValueChange={setScheduleStation}
+                          >
+                            <option value="">選択してください</option>
+                            {(scheduleServiceType === "nhk" ? nhkStations : stations).map((s) => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">タイトル</label>
+                        <Input
+                          placeholder="録音タイトル"
+                          value={scheduleTitle}
+                          onChange={(e) => setScheduleTitle(e.target.value)}
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">日付</label>
+                          <Input
+                            type="date"
+                            value={scheduleDate}
+                            onChange={(e) => setScheduleDate(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">開始時刻</label>
+                          <Input
+                            type="time"
+                            value={scheduleTime}
+                            onChange={(e) => setScheduleTime(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">録音時間(分)</label>
+                          <Input
+                            type="number"
+                            min="1"
+                            max="360"
+                            value={scheduleDuration}
+                            onChange={(e) => setScheduleDuration(Number(e.target.value))}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <Button variant="outline" onClick={() => setShowScheduleForm(false)}>
+                          キャンセル
+                        </Button>
+                        <Button onClick={addScheduledRecording}>
+                          予約を追加
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {scheduledRecordings.length === 0 && !showScheduleForm ? (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-16">
+                      <Calendar className="h-12 w-12 text-muted-foreground/50 mb-4" />
+                      <p className="text-muted-foreground">予約録音がありません</p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        「新規予約」ボタンから予約を追加してください
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="grid gap-4">
+                    {scheduledRecordings
+                      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+                      .map((recording) => (
+                        <Card key={recording.id}>
+                          <CardContent className="p-4">
+                            <div className="flex items-center gap-4">
+                              <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                <Clock className="h-5 w-5 text-primary" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-medium truncate">{recording.title}</h3>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <Badge variant="outline">{recording.stationName}</Badge>
+                                  <span className="text-sm text-muted-foreground">
+                                    {formatDuration(recording.duration)}
+                                  </span>
+                                </div>
+                                <p className="text-sm text-muted-foreground mt-1">
+                                  {formatDateTime(recording.startTime)}
+                                </p>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-muted-foreground hover:text-destructive"
+                                onClick={() => removeScheduledRecording(recording.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Settings View */}
             {view === "settings" && (
               <div className="space-y-6">
                 <h1 className="text-2xl font-bold">設定</h1>
