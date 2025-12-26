@@ -67,16 +67,8 @@ interface ScheduledRecording {
 type View = "library" | "stations" | "schedule" | "settings";
 type ServiceType = "nhk" | "radiko";
 
-// Check if running in Tauri context
-const isTauri = (): boolean => {
-  return typeof window !== "undefined" && "__TAURI__" in window;
-};
-
-// Safe invoke wrapper
+// Safe invoke wrapper - just use invoke directly, errors will be caught
 async function safeInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) {
-    throw new Error("このアプリはTauriデスクトップアプリとして実行する必要があります。\n\n起動方法: npm run tauri dev");
-  }
   return invoke<T>(command, args);
 }
 
@@ -101,7 +93,6 @@ function App() {
   const [isProgramLoading, setIsProgramLoading] = useState(false);
   const [error, setError] = useState("");
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
-  const [isTauriAvailable, setIsTauriAvailable] = useState(true);
 
   // Scheduled recordings state
   const [scheduledRecordings, setScheduledRecordings] = useState<ScheduledRecording[]>([]);
@@ -114,14 +105,9 @@ function App() {
   const [scheduleServiceType, setScheduleServiceType] = useState<ServiceType>("nhk");
 
   useEffect(() => {
-    const tauriAvailable = isTauri();
-    setIsTauriAvailable(tauriAvailable);
-
-    if (tauriAvailable) {
-      loadLibrary();
-      loadNhkStations();
-      loadScheduledRecordings();
-    }
+    loadLibrary();
+    loadNhkStations();
+    loadScheduledRecordings();
 
     // Set up scheduled recording checker
     const interval = setInterval(checkScheduledRecordings, 60000);
@@ -173,8 +159,6 @@ function App() {
   };
 
   const checkScheduledRecordings = async () => {
-    if (!isTauri()) return;
-
     const now = new Date();
     const toRecord = scheduledRecordings.filter((r) => {
       const diff = r.startTime.getTime() - now.getTime();
@@ -424,33 +408,6 @@ function App() {
     { id: "schedule" as View, label: "予約録音", icon: Calendar },
     { id: "settings" as View, label: "設定", icon: Settings },
   ];
-
-  // Show error if not in Tauri context
-  if (!isTauriAvailable) {
-    return (
-      <div className="flex h-screen bg-background items-center justify-center p-8">
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="h-5 w-5" />
-              起動エラー
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-muted-foreground">
-              このアプリはTauriデスクトップアプリとして実行する必要があります。
-            </p>
-            <div className="bg-secondary p-4 rounded-lg">
-              <p className="font-mono text-sm">npm run tauri dev</p>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              上記のコマンドで起動してください。
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="flex h-screen bg-background">
