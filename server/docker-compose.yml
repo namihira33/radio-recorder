@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  radio-recorder:
+    build: .
+    container_name: radio-recorder
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./recordings:/app/recordings
+    environment:
+      - PORT=3000
+      - RECORDINGS_DIR=/app/recordings
+      - RUST_LOG=info
+    # For Sakura VPS with limited resources
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M

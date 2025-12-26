@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radio Recorder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            background: '#0a0a0a',
+            foreground: '#fafafa',
+            card: '#171717',
+            border: '#262626',
+            primary: '#3b82f6',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0a0a0a; color: #fafafa; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="app" class="container mx-auto px-4 py-8 max-w-4xl">
+    <!-- Header -->
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold flex items-center gap-3">
+        <span class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+          </svg>
+        </span>
+        Radio Recorder
+      </h1>
+      <p class="text-gray-400 mt-2">NHK / radiko 録音サーバー</p>
+    </header>
+
+    <!-- Tabs -->
+    <div class="mb-6">
+      <div class="flex gap-2 border-b border-border pb-2">
+        <button onclick="showTab('recordings')" id="tab-recordings" class="tab-btn px-4 py-2 rounded-lg bg-primary text-white">録音一覧</button>
+        <button onclick="showTab('stations')" id="tab-stations" class="tab-btn px-4 py-2 rounded-lg hover:bg-card">放送局</button>
+        <button onclick="showTab('schedules')" id="tab-schedules" class="tab-btn px-4 py-2 rounded-lg hover:bg-card">予約録音</button>
+        <button onclick="showTab('settings')" id="tab-settings" class="tab-btn px-4 py-2 rounded-lg hover:bg-card">設定</button>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div id="content">
+      <!-- Recordings Tab -->
+      <div id="page-recordings" class="page">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-semibold">録音一覧</h2>
+          <button onclick="loadRecordings()" class="px-4 py-2 bg-card border border-border rounded-lg hover:bg-border">更新</button>
+        </div>
+        <div id="recordings-list" class="space-y-3">
+          <p class="text-gray-400">読み込み中...</p>
+        </div>
+      </div>
+
+      <!-- Stations Tab -->
+      <div id="page-stations" class="page hidden">
+        <div class="mb-4">
+          <div class="flex gap-2 mb-4">
+            <button onclick="showService('nhk')" id="svc-nhk" class="svc-btn px-4 py-2 rounded-lg bg-primary text-white">NHK</button>
+            <button onclick="showService('radiko')" id="svc-radiko" class="svc-btn px-4 py-2 rounded-lg bg-card border border-border hover:bg-border">radiko</button>
+          </div>
+        </div>
+
+        <div id="nhk-content" class="grid md:grid-cols-2 gap-4">
+          <div class="bg-card border border-border rounded-lg p-4">
+            <h3 class="font-semibold mb-3">NHK放送局</h3>
+            <div id="nhk-stations" class="space-y-2"></div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-4">
+            <h3 class="font-semibold mb-3">番組表</h3>
+            <div id="nhk-programs" class="space-y-2 max-h-96 overflow-y-auto">
+              <p class="text-gray-400">放送局を選択してください</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="radiko-content" class="hidden">
+          <div id="radiko-auth" class="bg-card border border-border rounded-lg p-6 max-w-md">
+            <h3 class="font-semibold mb-4">radikoにログイン</h3>
+            <div class="space-y-4">
+              <input type="email" id="radiko-email" placeholder="メールアドレス（任意）" class="w-full px-4 py-2 bg-background border border-border rounded-lg">
+              <input type="password" id="radiko-password" placeholder="パスワード（任意）" class="w-full px-4 py-2 bg-background border border-border rounded-lg">
+              <button onclick="authenticateRadiko()" class="w-full px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600">ログイン</button>
+              <p class="text-xs text-gray-400 text-center">※ 空欄でもエリア内の放送局は利用できます</p>
+            </div>
+          </div>
+          <div id="radiko-main" class="hidden grid md:grid-cols-2 gap-4">
+            <div class="bg-card border border-border rounded-lg p-4">
+              <h3 class="font-semibold mb-3">radiko放送局</h3>
+              <div id="radiko-stations" class="space-y-2 max-h-96 overflow-y-auto"></div>
+            </div>
+            <div class="bg-card border border-border rounded-lg p-4">
+              <h3 class="font-semibold mb-3">番組表</h3>
+              <div id="radiko-programs" class="space-y-2 max-h-96 overflow-y-auto">
+                <p class="text-gray-400">放送局を選択してください</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Schedules Tab -->
+      <div id="page-schedules" class="page hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-semibold">予約録音</h2>
+          <button onclick="showScheduleForm()" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600">+ 新規予約</button>
+        </div>
+
+        <div id="schedule-form" class="hidden bg-card border border-border rounded-lg p-4 mb-4">
+          <h3 class="font-semibold mb-4">新規予約</h3>
+          <div class="grid md:grid-cols-2 gap-4 mb-4">
+            <select id="sched-service" class="px-4 py-2 bg-background border border-border rounded-lg" onchange="updateScheduleStations()">
+              <option value="nhk">NHK</option>
+              <option value="radiko">radiko</option>
+            </select>
+            <select id="sched-station" class="px-4 py-2 bg-background border border-border rounded-lg">
+              <option value="">放送局を選択</option>
+            </select>
+          </div>
+          <div class="mb-4">
+            <input type="text" id="sched-title" placeholder="タイトル" class="w-full px-4 py-2 bg-background border border-border rounded-lg">
+          </div>
+          <div class="grid md:grid-cols-3 gap-4 mb-4">
+            <input type="date" id="sched-date" class="px-4 py-2 bg-background border border-border rounded-lg">
+            <input type="time" id="sched-time" class="px-4 py-2 bg-background border border-border rounded-lg">
+            <input type="number" id="sched-duration" value="30" min="1" max="360" placeholder="録音時間(分)" class="px-4 py-2 bg-background border border-border rounded-lg">
+          </div>
+          <div class="mb-4">
+            <select id="sched-repeat" class="w-full px-4 py-2 bg-background border border-border rounded-lg">
+              <option value="">1回のみ</option>
+              <option value="daily">毎日</option>
+              <option value="weekdays">平日のみ</option>
+              <option value="weekly">毎週</option>
+            </select>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="createSchedule()" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600">予約を追加</button>
+            <button onclick="hideScheduleForm()" class="px-4 py-2 bg-card border border-border rounded-lg hover:bg-border">キャンセル</button>
+          </div>
+        </div>
+
+        <div id="schedules-list" class="space-y-3">
+          <p class="text-gray-400">読み込み中...</p>
+        </div>
+      </div>
+
+      <!-- Settings Tab -->
+      <div id="page-settings" class="page hidden">
+        <h2 class="text-xl font-semibold mb-4">設定</h2>
+        <div class="bg-card border border-border rounded-lg p-4">
+          <div class="space-y-4">
+            <div>
+              <h3 class="font-semibold mb-2">radiko認証状態</h3>
+              <p id="radiko-status" class="text-gray-400">未認証</p>
+            </div>
+            <div>
+              <h3 class="font-semibold mb-2">サーバー情報</h3>
+              <p class="text-gray-400">Radio Recorder Server v0.1.0</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';  // Same origin
+    let nhkStations = [];
+    let radikoStations = [];
+    let radikoAuthenticated = false;
+
+    // Tab handling
+    function showTab(tab) {
+      document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.remove('bg-primary', 'text-white');
+        b.classList.add('hover:bg-card');
+      });
+      document.getElementById('page-' + tab).classList.remove('hidden');
+      const btn = document.getElementById('tab-' + tab);
+      btn.classList.add('bg-primary', 'text-white');
+      btn.classList.remove('hover:bg-card');
+    }
+
+    function showService(svc) {
+      document.querySelectorAll('.svc-btn').forEach(b => {
+        b.classList.remove('bg-primary', 'text-white');
+        b.classList.add('bg-card', 'border', 'border-border', 'hover:bg-border');
+      });
+      const btn = document.getElementById('svc-' + svc);
+      btn.classList.add('bg-primary', 'text-white');
+      btn.classList.remove('bg-card', 'border', 'border-border', 'hover:bg-border');
+
+      document.getElementById('nhk-content').classList.toggle('hidden', svc !== 'nhk');
+      document.getElementById('radiko-content').classList.toggle('hidden', svc !== 'radiko');
+    }
+
+    // API calls
+    async function loadRecordings() {
+      try {
+        const res = await fetch(API + '/api/recordings');
+        const recordings = await res.json();
+        const list = document.getElementById('recordings-list');
+
+        if (recordings.length === 0) {
+          list.innerHTML = '<p class="text-gray-400">録音がありません</p>';
+          return;
+        }
+
+        list.innerHTML = recordings.map(r => `
+          <div class="bg-card border border-border rounded-lg p-4 flex items-center justify-between">
+            <div>
+              <h3 class="font-medium">${r.title}</h3>
+              <p class="text-sm text-gray-400">${r.station_name} / ${r.duration}分</p>
+              <p class="text-xs text-gray-500">${new Date(r.recorded_at).toLocaleString('ja-JP')}</p>
+            </div>
+            <div class="flex gap-2">
+              <a href="/files/${r.file_path.split('/').pop()}" class="px-3 py-1 bg-primary text-white rounded hover:bg-blue-600" download>DL</a>
+              <button onclick="deleteRecording('${r.id}')" class="px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30">削除</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load recordings:', e);
+      }
+    }
+
+    async function loadNhkStations() {
+      try {
+        const res = await fetch(API + '/api/stations/nhk');
+        nhkStations = await res.json();
+        const list = document.getElementById('nhk-stations');
+        list.innerHTML = nhkStations.map(s => `
+          <button onclick="loadNhkPrograms('${s.id}', '${s.name}')" class="w-full text-left px-3 py-2 rounded hover:bg-border">${s.name}</button>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load NHK stations:', e);
+      }
+    }
+
+    async function loadNhkPrograms(stationId, stationName) {
+      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      try {
+        const res = await fetch(API + `/api/programs/nhk/${stationId}/${today}`);
+        const programs = await res.json();
+        const list = document.getElementById('nhk-programs');
+
+        list.innerHTML = programs.map(p => `
+          <div class="border-b border-border pb-2 mb-2">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="font-medium">${p.title}</p>
+                <p class="text-xs text-gray-400">${formatTime(p.start_time)} - ${formatTime(p.end_time)}</p>
+              </div>
+              <button onclick="startRecording('nhk', '${stationId}', '${stationName}', '${p.title.replace(/'/g, "\\'")}', ${calcDuration(p.start_time, p.end_time)})" class="px-2 py-1 text-xs bg-primary text-white rounded">録音</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load programs:', e);
+      }
+    }
+
+    async function authenticateRadiko() {
+      const email = document.getElementById('radiko-email').value;
+      const password = document.getElementById('radiko-password').value;
+      try {
+        const res = await fetch(API + '/api/auth/radiko', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          radikoAuthenticated = true;
+          document.getElementById('radiko-auth').classList.add('hidden');
+          document.getElementById('radiko-main').classList.remove('hidden');
+          document.getElementById('radiko-status').textContent = `認証済み (${data.area_id})${data.is_premium ? ' [プレミアム]' : ''}`;
+          loadRadikoStations();
+        } else {
+          alert('認証に失敗しました');
+        }
+      } catch (e) {
+        console.error('Auth failed:', e);
+      }
+    }
+
+    async function loadRadikoStations() {
+      try {
+        const res = await fetch(API + '/api/stations/radiko');
+        radikoStations = await res.json();
+        const list = document.getElementById('radiko-stations');
+        list.innerHTML = radikoStations.map(s => `
+          <button onclick="loadRadikoPrograms('${s.id}', '${s.name}')" class="w-full text-left px-3 py-2 rounded hover:bg-border">${s.name}</button>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load radiko stations:', e);
+      }
+    }
+
+    async function loadRadikoPrograms(stationId, stationName) {
+      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      try {
+        const res = await fetch(API + `/api/programs/radiko/${stationId}/${today}`);
+        const programs = await res.json();
+        const list = document.getElementById('radiko-programs');
+
+        list.innerHTML = programs.map(p => `
+          <div class="border-b border-border pb-2 mb-2">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="font-medium">${p.title}</p>
+                <p class="text-xs text-gray-400">${formatTime(p.start_time)} - ${formatTime(p.end_time)}</p>
+              </div>
+              <button onclick="startRecording('radiko', '${stationId}', '${stationName}', '${p.title.replace(/'/g, "\\'")}', ${calcDuration(p.start_time, p.end_time)})" class="px-2 py-1 text-xs bg-primary text-white rounded">録音</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load programs:', e);
+      }
+    }
+
+    async function startRecording(serviceType, stationId, stationName, title, duration) {
+      try {
+        const res = await fetch(API + '/api/recordings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            service_type: serviceType,
+            station_id: stationId,
+            station_name: stationName,
+            title: title,
+            duration: duration
+          })
+        });
+        if (res.ok) {
+          alert('録音を開始しました');
+        }
+      } catch (e) {
+        console.error('Failed to start recording:', e);
+      }
+    }
+
+    async function deleteRecording(id) {
+      if (!confirm('この録音を削除しますか？')) return;
+      try {
+        await fetch(API + `/api/recordings/${id}`, { method: 'DELETE' });
+        loadRecordings();
+      } catch (e) {
+        console.error('Failed to delete recording:', e);
+      }
+    }
+
+    async function loadSchedules() {
+      try {
+        const res = await fetch(API + '/api/schedules');
+        const schedules = await res.json();
+        const list = document.getElementById('schedules-list');
+
+        if (schedules.length === 0) {
+          list.innerHTML = '<p class="text-gray-400">予約録音がありません</p>';
+          return;
+        }
+
+        list.innerHTML = schedules.map(s => `
+          <div class="bg-card border border-border rounded-lg p-4 flex items-center justify-between">
+            <div>
+              <h3 class="font-medium">${s.title}</h3>
+              <p class="text-sm text-gray-400">${s.station_name} / ${s.duration}分</p>
+              <p class="text-xs text-gray-500">${new Date(s.start_time).toLocaleString('ja-JP')} ${s.repeat ? '(' + s.repeat + ')' : ''}</p>
+            </div>
+            <button onclick="deleteSchedule('${s.id}')" class="px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30">削除</button>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load schedules:', e);
+      }
+    }
+
+    function showScheduleForm() {
+      document.getElementById('schedule-form').classList.remove('hidden');
+      updateScheduleStations();
+    }
+
+    function hideScheduleForm() {
+      document.getElementById('schedule-form').classList.add('hidden');
+    }
+
+    function updateScheduleStations() {
+      const service = document.getElementById('sched-service').value;
+      const stations = service === 'nhk' ? nhkStations : radikoStations;
+      const select = document.getElementById('sched-station');
+      select.innerHTML = '<option value="">放送局を選択</option>' +
+        stations.map(s => `<option value="${s.id}" data-name="${s.name}">${s.name}</option>`).join('');
+    }
+
+    async function createSchedule() {
+      const stationSelect = document.getElementById('sched-station');
+      const station = stationSelect.value;
+      const stationName = stationSelect.options[stationSelect.selectedIndex].dataset.name;
+      const date = document.getElementById('sched-date').value;
+      const time = document.getElementById('sched-time').value;
+
+      if (!station || !date || !time) {
+        alert('必須項目を入力してください');
+        return;
+      }
+
+      const startTime = new Date(`${date}T${time}`).toISOString();
+
+      try {
+        const res = await fetch(API + '/api/schedules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            station_id: station,
+            station_name: stationName,
+            service_type: document.getElementById('sched-service').value,
+            title: document.getElementById('sched-title').value || stationName,
+            start_time: startTime,
+            duration: parseInt(document.getElementById('sched-duration').value),
+            repeat: document.getElementById('sched-repeat').value || null
+          })
+        });
+        if (res.ok) {
+          hideScheduleForm();
+          loadSchedules();
+        }
+      } catch (e) {
+        console.error('Failed to create schedule:', e);
+      }
+    }
+
+    async function deleteSchedule(id) {
+      if (!confirm('この予約を削除しますか？')) return;
+      try {
+        await fetch(API + `/api/schedules/${id}`, { method: 'DELETE' });
+        loadSchedules();
+      } catch (e) {
+        console.error('Failed to delete schedule:', e);
+      }
+    }
+
+    // Utilities
+    function formatTime(t) {
+      if (t.length >= 12) return t.slice(8, 10) + ':' + t.slice(10, 12);
+      return t;
+    }
+
+    function calcDuration(start, end) {
+      const s = parseInt(start.slice(8, 10)) * 60 + parseInt(start.slice(10, 12));
+      const e = parseInt(end.slice(8, 10)) * 60 + parseInt(end.slice(10, 12));
+      return Math.max(e - s, 30);
+    }
+
+    // Initialize
+    loadRecordings();
+    loadNhkStations();
+    loadSchedules();
+  </script>
+</body>
+</html>
